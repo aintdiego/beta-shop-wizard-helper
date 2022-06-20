@@ -183,6 +183,8 @@ function addCheapest()
 }
 
 $(document).ajaxSuccess(function () {
+    current_group = null;
+
     saveCheapest();
     showGroups();
     addCheapest();
