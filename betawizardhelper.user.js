@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         Shop Wizard Beta Price Check Helper
 // @namespace    http://tampermonkey.net/
-// @version      1.0
+// @version      1.1
 // @description  Keep the cheapest price between refreshes
 // @author       aintdiego
-// @match        http*://www.neopets.com/shops/wizard.phtml*
+// @match        *://www.neopets.com/shops/wizard.phtml*
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_deleteValue
@@ -116,7 +116,6 @@ function showGroups()
                             type="submit"
                             value="${group}"
                             style="opacity: 1;"
-                            disabled
                         >`;
         } else {
             content += `<input
@@ -125,7 +124,6 @@ function showGroups()
                             type="submit"
                             value="${group}"
                             style="opacity: 0.1;"
-                            disabled
                         >`;
         }
     });
