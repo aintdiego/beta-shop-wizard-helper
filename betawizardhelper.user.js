@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Shop Wizard Beta Price Check Helper
 // @namespace    http://tampermonkey.net/
-// @version      1.1
-// @description  Keep the cheapest price between refreshes
+// @version      1.2
+// @description  Keep the N cheapest prices between refreshes
 // @author       aintdiego
 // @match        *://www.neopets.com/shops/wizard.phtml*
 // @grant        GM_getValue
@@ -10,10 +10,11 @@
 // @grant        GM_deleteValue
 // ==/UserScript==
 
+// How many of the cheapest results to keep around between refreshes
+const MAX_STORED_RESULTS = 3;
+
 // Let's clear stored values because this is a new search making them no longer relevant
-GM_deleteValue('current_cheapest');
-GM_deleteValue('cheapest_html');
-GM_deleteValue('cheapest_owner');
+GM_deleteValue('cheapest_results');
 
 // Here we are mapping each letter to their corresponding search group
 const result_groups = [
@@ -46,7 +47,7 @@ const results_for_display = [
 const visited_groups = new Set();
 
 // To highlight the current group
-var current_group = null;
+let current_group = null;
 
 function saveCheapest()
 {
@@ -62,14 +63,11 @@ function saveCheapest()
 
     const shop_owner = cheapest_row.children('a').first().text();
     const price = cheapest_row.children('.wizard-results-price').first().text();
-    const formatted_price = parseInt(price.slice(0, -3).replace(/,/g, ""));
-    const current_cheapest = GM_getValue('current_cheapest');
+    // Strip everything that isn't a digit (thousands separators, the " NP" suffix, etc.)
+    const formatted_price = parseInt(price.replace(/\D/g, ''), 10);
 
-    if (!current_cheapest || formatted_price < current_cheapest) {
-        GM_setValue('current_cheapest', formatted_price);
-
-        // Let's add some color and then wrap it in a irrelevant tag to be able to store the tag itself
-        const cheapest_html = cheapest_row
+    // Let's add some color and then wrap it in a irrelevant tag to be able to store the tag itself
+    const cheapest_html = cheapest_row
         .clone()
         .addClass('stored-result')
         .attr('style', 'background-color: #ffff90 !important;')
@@ -77,11 +75,24 @@ function saveCheapest()
         .parent()
         .html();
 
-        GM_setValue('cheapest_html', cheapest_html);
-        GM_setValue('cheapest_owner', shop_owner); // Let's also store the owner to avoid duplicating rows
-    }
-
+    storeCheapestCandidate(shop_owner, formatted_price, cheapest_html);
     markGroupAsVisited(shop_owner);
+}
+
+function storeCheapestCandidate(owner, price, html)
+{
+    let results = GM_getValue('cheapest_results', []);
+
+    // Drop any earlier entry for this same shop, it's about to be replaced with fresh data
+    results = results.filter((result) => result.owner !== owner);
+
+    // Put the new candidate first: on a price tie the stable sort below keeps it ahead
+    // of older entries, so it survives the truncation. An older match at the same price
+    // is more likely to already be sold out, so the most recent one should win the slot.
+    results.unshift({ owner, price, html });
+    results.sort((a, b) => a.price - b.price);
+
+    GM_setValue('cheapest_results', results.slice(0, MAX_STORED_RESULTS));
 }
 
 function markGroupAsVisited(shop_owner)
@@ -100,45 +111,30 @@ function showGroups()
 
     const groups_section = $('#groups');
 
-    var content = "";
+    const content = results_for_display.map((group) => {
+        const is_visited = visited_groups.has(group);
+        const button_color = is_visited && group === current_group ? 'button-red__2020' : 'button-blue__2020';
+        const opacity = is_visited ? 1 : 0.1;
 
-    results_for_display.forEach((group, index) => {
-        let button_color = "button-blue__2020";
-
-        if (visited_groups.has(group)) {
-            if (group == current_group) {
-                button_color = "button-red__2020";
-            }
-
-            content += `<input
-                            class="button-default__2020 ${button_color} btn-single__2020 wizard-button__2020"
-                            id="refreshresults"
-                            type="submit"
-                            value="${group}"
-                            style="opacity: 1;"
-                        >`;
-        } else {
-            content += `<input
-                            class="button-default__2020 ${button_color} btn-single__2020 wizard-button__2020"
-                            id="refreshresults"
-                            type="submit"
-                            value="${group}"
-                            style="opacity: 0.1;"
-                        >`;
-        }
-    });
+        return `<input
+                    class="button-default__2020 ${button_color} btn-single__2020 wizard-button__2020 group-button"
+                    type="submit"
+                    value="${group}"
+                    style="opacity: ${opacity};"
+                >`;
+    }).join('');
 
     groups_section.html(content);
 }
 
-function addCheapest()
+function addCheapestResults()
 {
     let results_header = $('.wizard-results-grid.wizard-results-grid-shop')
         .find('.wizard-results-grid-header')
         .first();
 
     if (results_header.length === 0) {
-        // No results found, probably. Let's attach the results table to show the last cheapest store
+        // No results found, probably. Let's attach the results table to show the last cheapest stores
         $('#groups')
         .after(`<div id="custom-results" class="wizard-results-grid wizard-results-grid-shop">
                     <ul>
@@ -154,36 +150,54 @@ function addCheapest()
         .find('.wizard-results-grid-header')
         .first();
     } else {
-        // Results found, let's remove the manually placed result, if any
+        // Results found, let's remove the manually placed results, if any
         $('#custom-results').remove();
     }
 
-    const cheapest_html = GM_getValue('cheapest_html');
-
-    if (!cheapest_html) {
-        return;
-    }
-
-    const current_cheapest_row = $('.wizard-results-grid.wizard-results-grid-shop')
-        .find('li:not(.wizard-results-grid-header):not(.stored-result)')
-        .first();
-    const current_owner = current_cheapest_row.children('a').first().text();
-
-    const cheapest_owner = GM_getValue('cheapest_owner');
+    const cheapest_results = GM_getValue('cheapest_results', []);
 
     $('.stored-result').remove();
 
-    if (cheapest_owner === current_owner) {
-        current_cheapest_row.attr('style', 'background-color: #ffff90 !important;');
-    } else {
-        results_header.after(cheapest_html);
+    // A stored result might belong to a shop that's already showing in this page's own
+    // results; in that case highlight the live row instead of appending a duplicate.
+    const live_rows = $('.wizard-results-grid.wizard-results-grid-shop')
+        .find('li:not(.wizard-results-grid-header):not(.stored-result)');
+
+    const rows_to_append = [];
+
+    cheapest_results.forEach((result) => {
+        const matching_row = live_rows.filter((_, row) => $(row).children('a').first().text() === result.owner);
+
+        if (matching_row.length > 0) {
+            matching_row.attr('style', 'background-color: #ffff90 !important;');
+        } else {
+            rows_to_append.push(result.html);
+        }
+    });
+
+    if (rows_to_append.length > 0) {
+        results_header.after(rows_to_append.join(''));
     }
 }
 
-$(document).ajaxSuccess(function () {
+// The search always returns a random result group, which can repeat between searches.
+// Without a loading indicator there's no way to tell a fresh search from a stale page,
+// so we un-highlight the current group as soon as the search starts and only highlight
+// it again once the new results come back.
+$(document).ajaxSend(function () {
     current_group = null;
+    showGroups();
+});
 
+$(document).ajaxSuccess(function () {
     saveCheapest();
     showGroups();
-    addCheapest();
+    addCheapestResults();
 });
+
+const sswButton = $('.navsub-ssw-icon__2020');
+
+if( document.URL.includes('/shops/wizard.phtml') && sswButton.length ) {
+    $('#ssw__2020').css('display', 'block');
+    $('#searchstr').val($('#shopwizard').val());
+}
